@@ -1,5 +1,13 @@
 import type { LucideIcon } from "lucide-react";
-import { ChartBar as BarChart3, Factory as History, LayoutDashboard, Radio, Settings } from "lucide-react";
+import {
+  ChartBar as BarChart3,
+  Factory as History,
+  LayoutDashboard,
+  MonitorPlay,
+  Radio,
+  ScanLine,
+  Settings,
+} from "lucide-react";
 
 export type NavItem = {
   href: string;
@@ -10,6 +18,8 @@ export type NavItem = {
 export const NAV_ITEMS: NavItem[] = [
   { href: "/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/live-court", label: "Live Court", icon: Radio },
+  { href: "/live-ai-court", label: "Live AI Court", icon: ScanLine },
+  { href: "/virtual-court", label: "Virtual Court", icon: MonitorPlay },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/match-history", label: "Match History", icon: History },
   { href: "/settings", label: "Settings", icon: Settings },

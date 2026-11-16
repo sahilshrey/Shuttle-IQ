@@ -8,6 +8,12 @@ export type CameraDevice = {
   label: string;
 };
 
+export type CameraStreamInfo = {
+  width: number | null;
+  height: number | null;
+  frameRate: number | null;
+};
+
 const UNSUPPORTED_MESSAGE =
   "This browser cannot access cameras. Use a current browser over HTTPS, such as Chrome or Edge.";
 
@@ -22,6 +28,7 @@ export function useCameraStream() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [devices, setDevices] = useState<CameraDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  const [streamInfo, setStreamInfo] = useState<CameraStreamInfo | null>(null);
 
   const refreshDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -55,6 +62,7 @@ export function useCameraStream() {
       stopStream();
       setStatus("requesting");
       setErrorMessage(null);
+      setStreamInfo(null);
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -70,9 +78,16 @@ export function useCameraStream() {
           stopStream();
           setStatus("error");
           setErrorMessage("The camera was disconnected. Reconnect it and start again.");
+          setStreamInfo(null);
         });
 
         streamRef.current = stream;
+        const settings = track.getSettings();
+        setStreamInfo({
+          width: settings.width ?? null,
+          height: settings.height ?? null,
+          frameRate: settings.frameRate ?? null,
+        });
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
         }
@@ -92,6 +107,7 @@ export function useCameraStream() {
     stopStream();
     setStatus("idle");
     setErrorMessage(null);
+    setStreamInfo(null);
   }, [stopStream]);
 
   const selectDevice = useCallback(
@@ -122,6 +138,7 @@ export function useCameraStream() {
     errorMessage,
     devices,
     selectedDeviceId,
+    streamInfo,
     start: () => startStream(selectedDeviceId || undefined),
     stop,
     selectDevice,

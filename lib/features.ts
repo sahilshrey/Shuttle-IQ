@@ -21,6 +21,18 @@ export const PLATFORM_FEATURES: PlatformFeature[] = [
     status: "live",
   },
   {
+    id: "live-ai-calibration",
+    title: "Live AI Court camera and calibration",
+    description: "Fixed-camera preview, adjustable transparent court overlay, and four-point visual calibration.",
+    status: "live",
+  },
+  {
+    id: "virtual-court",
+    title: "Virtual court and demo match",
+    description: "Interactive, dimensioned court rendering with simulated rally scoring.",
+    status: "live",
+  },
+  {
     id: "court-detection",
     title: "Automatic court detection",
     description: "Recognises court lines and boundaries from the camera feed.",
