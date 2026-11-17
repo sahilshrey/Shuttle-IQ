@@ -3,6 +3,15 @@ export type Point2D = {
   y: number;
 };
 
+export type Rect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+export type VideoDisplayRect = Rect;
+
 export type Homography = readonly [
   number,
   number,
@@ -20,6 +29,63 @@ export const UNIT_COURT_CORNERS: readonly Point2D[] = [
   { x: 1, y: 1 },
   { x: 0, y: 1 },
 ];
+
+export function getObjectFitCoverRect(
+  videoWidth: number,
+  videoHeight: number,
+  containerWidth: number,
+  containerHeight: number,
+): VideoDisplayRect {
+  if (
+    ![videoWidth, videoHeight, containerWidth, containerHeight].every(Number.isFinite) ||
+    videoWidth <= 0 ||
+    videoHeight <= 0 ||
+    containerWidth <= 0 ||
+    containerHeight <= 0
+  ) {
+    return { left: 0, top: 0, width: containerWidth, height: containerHeight };
+  }
+
+  const scale = Math.max(containerWidth / videoWidth, containerHeight / videoHeight);
+  const width = videoWidth * scale;
+  const height = videoHeight * scale;
+  return {
+    left: (containerWidth - width) / 2,
+    top: (containerHeight - height) / 2,
+    width,
+    height,
+  };
+}
+
+export function mapClientPointToVideo(
+  clientX: number,
+  clientY: number,
+  stageRect: Rect,
+  displayRect: VideoDisplayRect,
+): Point2D {
+  return {
+    x: (clientX - stageRect.left - displayRect.left) / displayRect.width,
+    y: (clientY - stageRect.top - displayRect.top) / displayRect.height,
+  };
+}
+
+export function mapVideoPointToStage(point: Point2D, displayRect: VideoDisplayRect): Point2D {
+  return {
+    x: displayRect.left + point.x * displayRect.width,
+    y: displayRect.top + point.y * displayRect.height,
+  };
+}
+
+export function mapStagePointToVideo(
+  point: Point2D,
+  stageSize: Pick<Rect, "width" | "height">,
+  displayRect: VideoDisplayRect,
+): Point2D {
+  return {
+    x: (point.x * stageSize.width - displayRect.left) / displayRect.width,
+    y: (point.y * stageSize.height - displayRect.top) / displayRect.height,
+  };
+}
 
 function solveLinearSystem(rows: number[][]): number[] | null {
   const size = rows.length;
@@ -110,4 +176,15 @@ export function isValidQuadrilateral(points: readonly Point2D[]): boolean {
     }, 0) / 2,
   );
   return area > 0.0001;
+}
+
+export function isValidOrderedCourt(points: readonly Point2D[]): boolean {
+  if (!isValidQuadrilateral(points)) return false;
+
+  const signedArea = points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point.x * next.y - next.x * point.y;
+  }, 0) / 2;
+
+  return signedArea > 0.0001;
 }

@@ -991,8 +991,21 @@ a {
 
 .live-ai-calibration-layer {
   z-index: 2;
-  cursor: crosshair;
+  pointer-events: none;
   touch-action: none;
+}
+
+.live-ai-calibration-layer.is-interactive {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+.live-ai-calibration-point {
+  cursor: grab;
+}
+
+.live-ai-calibration-point:active {
+  cursor: grabbing;
 }
 
 .live-ai-paused-label {
@@ -1088,6 +1101,16 @@ a {
   grid-column: 1 / -1;
   color: var(--error-400);
   font-size: 13px;
+}
+
+.live-ai-device-error,
+.live-ai-calibration-notice {
+  color: var(--warning-400);
+  font-size: 12px;
+}
+
+.live-ai-device-error {
+  grid-column: 1 / -1;
 }
 
 .live-ai-workspace {
@@ -1206,6 +1229,13 @@ a {
   border-color: rgba(248, 113, 113, 0.3);
   background: rgba(248, 113, 113, 0.08);
   color: var(--error-400);
+}
+
+.live-ai-calibration-notice {
+  padding: 10px 12px;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: var(--radius-md);
+  background: rgba(251, 191, 36, 0.08);
 }
 
 .live-ai-calibration-actions {
@@ -2036,6 +2066,31 @@ a {
 
   .virtual-demo-actions {
     flex-direction: column;
+  }
+}
+
+@media (min-width: 640px) and (orientation: landscape) {
+  .live-ai-stage {
+    aspect-ratio: 16 / 9;
+    min-height: clamp(240px, 48vh, 520px);
+    max-height: 72vh;
+  }
+}
+
+@media (min-width: 640px) and (max-width: 1023px) and (orientation: landscape) {
+  .live-ai-camera-controls {
+    grid-template-columns: minmax(180px, 1fr) auto auto;
+  }
+
+  .live-ai-camera-select {
+    grid-column: auto;
+  }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .live-ai-stage {
+    min-height: 180px;
+    max-height: 66vh;
   }
 }
 

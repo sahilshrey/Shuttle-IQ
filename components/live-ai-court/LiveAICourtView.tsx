@@ -17,11 +17,17 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { useCameraStream } from "@/lib/camera/useCameraStream";
 import {
   isValidQuadrilateral,
+  isValidOrderedCourt,
+  getObjectFitCoverRect,
+  mapClientPointToVideo,
+  mapStagePointToVideo,
+  mapVideoPointToStage,
   projectPoint,
   solveHomography,
   UNIT_COURT_CORNERS,
   type Homography,
   type Point2D,
+  type VideoDisplayRect,
 } from "@/lib/calibration/homography";
 import { AI_PROVIDER_STATUS } from "@/lib/ai/tracking";
 import type { CameraStatus } from "@/lib/camera/camera-errors";
@@ -169,18 +175,20 @@ function CameraMessage({ status, errorMessage }: { status: CameraStatus; errorMe
 function ProjectedCourt({
   matrix,
   size,
+  displayRect,
   singles,
   opacity,
 }: {
   matrix: Homography;
   size: ViewSize;
+  displayRect: VideoDisplayRect;
   singles: boolean;
   opacity: number;
 }) {
   const screenPoint = (point: Point2D) => {
     const projected = projectPoint(matrix, point);
     if (!projected) return null;
-    return { x: projected.x * size.width, y: projected.y * size.height };
+    return mapVideoPointToStage(projected, displayRect);
   };
   const corners = UNIT_COURT_CORNERS.map(screenPoint);
   if (corners.some((point) => point === null)) return null;
@@ -217,23 +225,48 @@ function ProjectedCourt({
 export function LiveAICourtView() {
   const camera = useCameraStream();
   const stageRef = useRef<HTMLDivElement>(null);
+  const calibrationPointsRef = useRef<Point2D[]>([]);
+  const dragRef = useRef<{ index: number; originalPoints: Point2D[] } | null>(null);
+  const previousStageSizeRef = useRef<ViewSize | null>(null);
+  const previousVideoResolutionRef = useRef<ViewSize | null>(null);
   const [viewSize, setViewSize] = useState<ViewSize>({ width: 0, height: 0 });
   const [videoResolution, setVideoResolution] = useState<ViewSize | null>(null);
   const [isPaused, setIsPaused] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [matchFormat, setMatchFormat] = useState<"singles" | "doubles">("singles");
   const [isCalibrating, setIsCalibrating] = useState(false);
+  const [isEditingPoints, setIsEditingPoints] = useState(false);
   const [calibrationPoints, setCalibrationPoints] = useState<Point2D[]>([]);
   const [calibrationError, setCalibrationError] = useState<string | null>(null);
+  const [calibrationNotice, setCalibrationNotice] = useState<string | null>(null);
   const [hasVisibleMarkings, setHasVisibleMarkings] = useState(false);
   const [adjustment, setAdjustment] = useState(EMPTY_ADJUSTMENT);
+
+  calibrationPointsRef.current = calibrationPoints;
 
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
 
     const observer = new ResizeObserver(([entry]) => {
-      setViewSize({ width: entry.contentRect.width, height: entry.contentRect.height });
+      const nextSize = { width: entry.contentRect.width, height: entry.contentRect.height };
+      const previousSize = previousStageSizeRef.current;
+      previousStageSizeRef.current = nextSize;
+      setViewSize(nextSize);
+
+      if (
+        previousSize &&
+        (Math.abs(previousSize.width - nextSize.width) > 1 ||
+          Math.abs(previousSize.height - nextSize.height) > 1) &&
+        calibrationPointsRef.current.length > 0
+      ) {
+        setCalibrationPoints([]);
+        setIsCalibrating(false);
+        setIsEditingPoints(false);
+        setHasVisibleMarkings(false);
+        setAdjustment(EMPTY_ADJUSTMENT);
+        setCalibrationNotice("The video display size or orientation changed. Please calibrate again.");
+      }
     });
     observer.observe(stage);
     return () => observer.disconnect();
@@ -242,26 +275,63 @@ export function LiveAICourtView() {
   useEffect(() => {
     setIsPaused(false);
     setVideoResolution(null);
+    previousVideoResolutionRef.current = null;
     setCalibrationPoints([]);
     setIsCalibrating(false);
+    setIsEditingPoints(false);
     setCalibrationError(null);
+    setCalibrationNotice(null);
     setHasVisibleMarkings(false);
     setAdjustment(EMPTY_ADJUSTMENT);
   }, [camera.selectedDeviceId]);
 
+  useEffect(() => {
+    if (camera.status !== "live" && calibrationPointsRef.current.length > 0) {
+      setCalibrationPoints([]);
+      setIsCalibrating(false);
+      setIsEditingPoints(false);
+      setHasVisibleMarkings(false);
+      setAdjustment(EMPTY_ADJUSTMENT);
+      setCalibrationNotice("The camera stream stopped or changed. Please calibrate again after it is live.");
+    }
+  }, [camera.status]);
+
+  const actualWidth = videoResolution?.width ?? camera.streamInfo?.width ?? 0;
+  const actualHeight = videoResolution?.height ?? camera.streamInfo?.height ?? 0;
+  const displayRect = useMemo(
+    () => getObjectFitCoverRect(actualWidth, actualHeight, viewSize.width, viewSize.height),
+    [actualWidth, actualHeight, viewSize.height, viewSize.width],
+  );
+  const screenCalibrationPoints = useMemo(
+    () =>
+      calibrationPoints.map((point) => {
+        const displayed = mapVideoPointToStage(point, displayRect);
+        return { x: displayed.x / viewSize.width, y: displayed.y / viewSize.height };
+      }),
+    [calibrationPoints, displayRect, viewSize.height, viewSize.width],
+  );
   const adjustedPoints = useMemo(
-    () => adjustCorners(calibrationPoints, viewSize, adjustment),
-    [calibrationPoints, viewSize, adjustment],
+    () =>
+      adjustCorners(screenCalibrationPoints, viewSize, adjustment).map((point) =>
+        mapStagePointToVideo(point, viewSize, displayRect),
+      ),
+    [displayRect, screenCalibrationPoints, viewSize, adjustment],
+  );
+  const adjustedScreenPoints = useMemo(
+    () => adjustCorners(screenCalibrationPoints, viewSize, adjustment),
+    [screenCalibrationPoints, viewSize, adjustment],
   );
   const homography = useMemo(
     () =>
-      adjustedPoints.length === 4 && isValidQuadrilateral(adjustedPoints)
+      adjustedPoints.length === 4 &&
+      isValidOrderedCourt(adjustedScreenPoints) &&
+      isValidQuadrilateral(adjustedPoints)
         ? solveHomography(UNIT_COURT_CORNERS, adjustedPoints)
         : null,
-    [adjustedPoints],
+    [adjustedPoints, adjustedScreenPoints],
   );
   const isCalibrated = calibrationPoints.length === 4 && homography !== null;
-  const pointArea = quadrilateralArea(calibrationPoints);
+  const pointArea = quadrilateralArea(screenCalibrationPoints);
   const geometryQuality =
     !isCalibrated
       ? "Not calibrated"
@@ -277,38 +347,136 @@ export function LiveAICourtView() {
     if (camera.status !== "live") return;
     setCalibrationPoints([]);
     setCalibrationError(null);
+    setCalibrationNotice(null);
     setHasVisibleMarkings(false);
+    setIsEditingPoints(false);
     setIsCalibrating(true);
   }
 
-  function addCalibrationPoint(event: React.PointerEvent<SVGSVGElement>) {
-    if (!isCalibrating || !viewSize.width || !viewSize.height) return;
+  function pointFromPointer(event: React.PointerEvent<SVGSVGElement>) {
+    if (!viewSize.width || !viewSize.height || !displayRect.width || !displayRect.height) return null;
     const bounds = event.currentTarget.getBoundingClientRect();
-    const point = {
-      x: clamp((event.clientX - bounds.left) / bounds.width, 0, 1),
-      y: clamp((event.clientY - bounds.top) / bounds.height, 0, 1),
-    };
-    const nextPoints = [...calibrationPoints, point];
+    return mapClientPointToVideo(
+      clamp(event.clientX, bounds.left, bounds.right),
+      clamp(event.clientY, bounds.top, bounds.bottom),
+      bounds,
+      displayRect,
+    );
+  }
 
-    if (nextPoints.length === 4) {
-      if (!isValidQuadrilateral(nextPoints) || !solveHomography(UNIT_COURT_CORNERS, nextPoints)) {
-        setCalibrationError("Those points do not form a usable four-corner court shape. Mark them again in order.");
-        setCalibrationPoints([]);
-        return;
-      }
-      setIsCalibrating(false);
-      setCalibrationError(null);
+  function pointDown(event: React.PointerEvent<SVGSVGElement>) {
+    const handle = event.target instanceof Element ? event.target.closest("[data-point-index]") : null;
+    const index = Number(handle?.getAttribute("data-point-index"));
+    if (handle && Number.isInteger(index) && index >= 0 && index < calibrationPoints.length) {
+      dragRef.current = { index, originalPoints: calibrationPoints };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
+
+    if (!isCalibrating || calibrationPoints.length >= 4) return;
+    const point = pointFromPointer(event);
+    if (!point) return;
+
+    const nextPoints = [...calibrationPoints, {
+      x: clamp(point.x, 0, 1),
+      y: clamp(point.y, 0, 1),
+    }];
+    const nextScreenPoints = nextPoints.map((item) => {
+      const displayed = mapVideoPointToStage(item, displayRect);
+      return { x: displayed.x / viewSize.width, y: displayed.y / viewSize.height };
+    });
+
+    if (
+      nextPoints.length === 4 &&
+      (!isValidOrderedCourt(nextScreenPoints) || !solveHomography(UNIT_COURT_CORNERS, nextPoints))
+    ) {
+      setCalibrationError("These points are crossed, reversed, or too close together. Adjust the points or undo the last one.");
+      return;
     }
 
     setCalibrationPoints(nextPoints);
+    setCalibrationError(null);
+    if (nextPoints.length === 4) {
+      setIsCalibrating(false);
+      setIsEditingPoints(false);
+    }
+  }
+
+  function pointMove(event: React.PointerEvent<SVGSVGElement>) {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const point = pointFromPointer(event);
+    if (!point) return;
+    const nextPoints = [...calibrationPoints];
+    nextPoints[drag.index] = { x: clamp(point.x, 0, 1), y: clamp(point.y, 0, 1) };
+    setCalibrationPoints(nextPoints);
+    setCalibrationError(null);
+  }
+
+  function finishPointDrag(event: React.PointerEvent<SVGSVGElement>, cancelled = false) {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+
+    const point = cancelled ? null : pointFromPointer(event);
+    const nextPoints = [...calibrationPoints];
+    if (point) nextPoints[drag.index] = { x: clamp(point.x, 0, 1), y: clamp(point.y, 0, 1) };
+    const nextScreenPoints = nextPoints.map((item) => {
+      const displayed = mapVideoPointToStage(item, displayRect);
+      return { x: displayed.x / viewSize.width, y: displayed.y / viewSize.height };
+    });
+
+    if (
+      cancelled ||
+      (nextPoints.length === 4 &&
+        (!isValidOrderedCourt(nextScreenPoints) || !solveHomography(UNIT_COURT_CORNERS, nextPoints)))
+    ) {
+      setCalibrationPoints(drag.originalPoints);
+      setCalibrationError("That adjustment would make the court points invalid. The previous points were restored.");
+    } else {
+      setCalibrationPoints(nextPoints);
+      setCalibrationError(null);
+    }
   }
 
   function resetCalibration() {
     setCalibrationPoints([]);
     setIsCalibrating(false);
+    setIsEditingPoints(false);
     setCalibrationError(null);
+    setCalibrationNotice(null);
     setHasVisibleMarkings(false);
     setAdjustment(EMPTY_ADJUSTMENT);
+  }
+
+  function undoCalibrationPoint() {
+    setCalibrationPoints((points) => points.slice(0, -1));
+    setCalibrationError(null);
+  }
+
+  function onVideoMetadata(event: React.SyntheticEvent<HTMLVideoElement>) {
+    const nextResolution = {
+      width: event.currentTarget.videoWidth,
+      height: event.currentTarget.videoHeight,
+    };
+    const previousResolution = previousVideoResolutionRef.current;
+    previousVideoResolutionRef.current = nextResolution;
+    setVideoResolution(nextResolution);
+
+    if (
+      previousResolution &&
+      (previousResolution.width !== nextResolution.width ||
+        previousResolution.height !== nextResolution.height) &&
+      calibrationPointsRef.current.length > 0
+    ) {
+      setCalibrationPoints([]);
+      setIsCalibrating(false);
+      setIsEditingPoints(false);
+      setHasVisibleMarkings(false);
+      setAdjustment(EMPTY_ADJUSTMENT);
+      setCalibrationNotice("The camera video dimensions changed. Please calibrate again.");
+    }
   }
 
   async function togglePause() {
@@ -334,18 +502,16 @@ export function LiveAICourtView() {
     camera.stop();
     setIsPaused(false);
     setPlaybackError(null);
+    resetCalibration();
   }
 
   function onCameraChange(deviceId: string) {
     setIsPaused(false);
-    setCalibrationPoints([]);
-    setIsCalibrating(false);
+    resetCalibration();
     camera.selectDevice(deviceId);
   }
 
   const isLive = camera.status === "live";
-  const actualWidth = videoResolution?.width ?? camera.streamInfo?.width ?? null;
-  const actualHeight = videoResolution?.height ?? camera.streamInfo?.height ?? null;
   const frameRate = camera.streamInfo?.frameRate;
 
   return (
@@ -353,7 +519,7 @@ export function LiveAICourtView() {
       <PageHeader
         eyebrow="Live AI Court · Phase 1"
         title="Fixed side-view court"
-        subtitle="Use a stationary Android tablet rear camera. The video stays independent from the adjustable court overlay."
+        subtitle="Use a stationary Android tablet or phone camera. The video stays independent from the adjustable court overlay."
       />
 
       <div className="live-ai-camera-config">
@@ -382,12 +548,7 @@ export function LiveAICourtView() {
             muted
             playsInline
             aria-label="Live side-view badminton court camera"
-            onLoadedMetadata={(event) =>
-              setVideoResolution({
-                width: event.currentTarget.videoWidth,
-                height: event.currentTarget.videoHeight,
-              })
-            }
+            onLoadedMetadata={onVideoMetadata}
           />
           {isLive && isCalibrated && homography ? (
             <svg
@@ -400,30 +561,49 @@ export function LiveAICourtView() {
               <ProjectedCourt
                 matrix={homography}
                 size={viewSize}
+                displayRect={displayRect}
                 singles={matchFormat === "singles"}
                 opacity={adjustment.opacity}
               />
             </svg>
           ) : null}
-          {isLive && isCalibrating ? (
+          {isLive && (isCalibrating || isEditingPoints || calibrationPoints.length > 0) ? (
             <svg
-              className="live-ai-calibration-layer"
+              className={`live-ai-calibration-layer${isCalibrating || isEditingPoints ? " is-interactive" : ""}`}
               viewBox={`0 0 ${viewSize.width} ${viewSize.height}`}
               preserveAspectRatio="none"
-              onPointerDown={addCalibrationPoint}
+              onPointerDown={pointDown}
+              onPointerMove={pointMove}
+              onPointerUp={finishPointDrag}
+              onPointerCancel={(event) => finishPointDrag(event, true)}
               role="application"
-              aria-label="Tap the four visible court corners in order to calibrate the overlay"
+              aria-label="Manual visual calibration points. Drag points to adjust their positions."
             >
               <rect width={viewSize.width} height={viewSize.height} fill="transparent" />
-              {calibrationPoints.map((point, index) => (
-                <g key={`calibration-point-${index}`} pointerEvents="none">
-                  <circle cx={point.x * viewSize.width} cy={point.y * viewSize.height} r="12" fill="#34d399" fillOpacity=".24" />
-                  <circle cx={point.x * viewSize.width} cy={point.y * viewSize.height} r="5" fill="#eafff3" stroke="#10b981" strokeWidth="2" />
-                  <text x={point.x * viewSize.width + 12} y={point.y * viewSize.height - 10} fill="#ffffff" fontSize="13" paintOrder="stroke" stroke="#05110c" strokeWidth="3">
-                    {index + 1}
-                  </text>
-                </g>
-              ))}
+              {calibrationPoints.map((point, index) => {
+                const displayed = mapVideoPointToStage(point, displayRect);
+                return (
+                  <g
+                    key={`calibration-point-${index}`}
+                    className="live-ai-calibration-point"
+                    data-point-index={index}
+                  >
+                    <circle
+                      cx={displayed.x}
+                      cy={displayed.y}
+                      r="20"
+                      fill="#34d399"
+                      fillOpacity=".12"
+                      data-point-index={index}
+                    />
+                    <circle cx={displayed.x} cy={displayed.y} r="8" fill="#10b981" fillOpacity=".55" />
+                    <circle cx={displayed.x} cy={displayed.y} r="4" fill="#eafff3" stroke="#10b981" strokeWidth="2" />
+                    <text x={displayed.x + 14} y={displayed.y - 12} fill="#ffffff" fontSize="13" paintOrder="stroke" stroke="#05110c" strokeWidth="3">
+                      {index + 1}
+                    </text>
+                  </g>
+                );
+              })}
             </svg>
           ) : null}
           {!isLive ? <CameraMessage status={camera.status} errorMessage={camera.errorMessage} /> : null}
@@ -446,6 +626,7 @@ export function LiveAICourtView() {
               ))}
             </select>
           </div>
+          {camera.devicesError ? <p className="live-ai-device-error" role="status">{camera.devicesError}</p> : null}
           <div className="live-ai-video-stats" aria-label="Video stream details">
             <span><strong>Resolution</strong>{actualWidth && actualHeight ? `${actualWidth} × ${actualHeight}` : "—"}</span>
             <span><strong>Frame rate</strong>{frameRate ? `${frameRate.toFixed(1)} fps` : "Unavailable"}</span>
@@ -510,8 +691,8 @@ export function LiveAICourtView() {
             </div>
             <p>
               {isCalibrated
-                ? "Four-point projection ready. Visual fit only; physical court accuracy is not verified."
-                : "Mark four visible court reference corners to project the overlay."}
+                ? "Manual visual calibration only. This is not automatic court detection and does not verify physical accuracy."
+                : "Mark four visible court reference corners. This manual visual calibration is not automatic court detection."}
             </p>
           </div>
 
@@ -522,16 +703,32 @@ export function LiveAICourtView() {
                 {calibrationPoints.length < 4
                   ? `Tap ${CALIBRATION_LABELS[calibrationPoints.length]} (${calibrationPoints.length + 1} of 4).`
                   : "Four points marked."}
-                {" "}Place points clockwise around the visible court.
+                {" "}Place points clockwise, starting at the far-left corner. Drag a marked point to correct it.
               </span>
             </div>
           ) : null}
           {calibrationError ? <p className="live-ai-calibration-error" role="alert">{calibrationError}</p> : null}
+          {calibrationNotice ? <p className="live-ai-calibration-notice" role="status">{calibrationNotice}</p> : null}
 
           <div className="live-ai-calibration-actions">
             <button type="button" className="btn btn-primary" onClick={beginCalibration} disabled={!isLive}>
               <Crosshair size={16} /> {isCalibrated ? "Recalibrate" : "Mark 4 court points"}
             </button>
+            {isCalibrating && calibrationPoints.length > 0 ? (
+              <button type="button" className="btn btn-secondary" onClick={undoCalibrationPoint}>
+                <RotateCcw size={15} /> Undo last point
+              </button>
+            ) : null}
+            {isCalibrated && !isEditingPoints && !isCalibrating ? (
+              <button type="button" className="btn btn-secondary" onClick={() => setIsEditingPoints(true)} disabled={!isLive}>
+                <Target size={15} /> Adjust points
+              </button>
+            ) : null}
+            {isEditingPoints ? (
+              <button type="button" className="btn btn-secondary" onClick={() => setIsEditingPoints(false)}>
+                <Check size={15} /> Done adjusting
+              </button>
+            ) : null}
             {isCalibrating ? (
               <button type="button" className="btn btn-secondary" onClick={() => setIsCalibrating(false)}>
                 Cancel
