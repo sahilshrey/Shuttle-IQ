@@ -10,8 +10,15 @@ import {
   ZoomIn,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import {
+  COURT_DIMENSIONS,
+  getCourtLines,
+  metricToRenderPoint,
+  type MatchFormat,
+  type MetricPoint,
+  type MetricRect,
+} from "@/lib/court-config";
 
-type MatchFormat = "singles" | "doubles";
 type ViewPreset = "overhead" | "broadcast" | "sideline";
 
 type DemoGame = {
@@ -65,6 +72,7 @@ export function VirtualCourtView() {
   const [rotation, setRotation] = useState(0);
   const [zoom, setZoom] = useState(1);
   const [game, setGame] = useState<DemoGame>(INITIAL_GAME);
+  const [showMeasurements, setShowMeasurements] = useState(false);
 
   useEffect(() => {
     if (!game.isPlaying) return;
@@ -114,6 +122,9 @@ export function VirtualCourtView() {
   const shuttle = SHUTTLE_PATH[game.shotIndex % SHUTTLE_PATH.length];
   const playerShift = game.shotIndex % 3;
   const singlesActive = matchFormat === "singles";
+  const courtRenderRect: MetricRect = { left: 20, top: 13, width: 600, height: 274 };
+  const renderMetricPoint = (point: MetricPoint) =>
+    metricToRenderPoint(point, courtRenderRect);
   const firstPlayer = { x: [128, 150, 112][playerShift], y: [102, 122, 82][playerShift] };
   const secondPlayer = { x: [512, 490, 528][playerShift], y: [198, 178, 218][playerShift] };
   const firstPlayers = singlesActive
@@ -173,9 +184,19 @@ export function VirtualCourtView() {
             </div>
           </div>
           <span className="virtual-dimensions">
-            {matchFormat === "singles" ? "13.4 × 5.18 m" : "13.4 × 6.10 m"}
+            {matchFormat === "singles"
+              ? `${COURT_DIMENSIONS.lengthMeters.toFixed(2)} × ${COURT_DIMENSIONS.singlesWidthMeters.toFixed(2)} m`
+              : `${COURT_DIMENSIONS.lengthMeters.toFixed(2)} × ${COURT_DIMENSIONS.doublesWidthMeters.toFixed(2)} m`}
             <span>Official court dimensions</span>
           </span>
+          <button
+            type="button"
+            className={`btn btn-secondary${showMeasurements ? " is-active" : ""}`}
+            aria-pressed={showMeasurements}
+            onClick={() => setShowMeasurements((visible) => !visible)}
+          >
+            {showMeasurements ? "Hide measurements" : "Show measurements"}
+          </button>
         </div>
 
         <div className="virtual-stage">
@@ -223,25 +244,52 @@ export function VirtualCourtView() {
                 strokeLinecap="round"
                 strokeLinejoin="round"
               >
-                <rect x="20" y="13" width="600" height="274" />
-                <line x1="20" y1="34" x2="620" y2="34" strokeOpacity={singlesActive ? "1" : ".42"} />
-                <line x1="20" y1="266" x2="620" y2="266" strokeOpacity={singlesActive ? "1" : ".42"} />
-                <line x1="20" y1="13" x2="20" y2="287" />
-                <line x1="620" y1="13" x2="620" y2="287" />
-                <line x1="231" y1="13" x2="231" y2="287" />
-                <line x1="409" y1="13" x2="409" y2="287" />
-                <line x1="54" y1="13" x2="54" y2="287" strokeDasharray="5 5" strokeOpacity={singlesActive ? ".28" : "1"} />
-                <line x1="586" y1="13" x2="586" y2="287" strokeDasharray="5 5" strokeOpacity={singlesActive ? ".28" : "1"} />
-                <line x1="20" y1="150" x2="231" y2="150" />
-                <line x1="409" y1="150" x2="620" y2="150" />
+                {getCourtLines(matchFormat).map((line) => {
+                  const from = renderMetricPoint(line.from);
+                  const to = renderMetricPoint(line.to);
+                  const isNet = line.id === "net";
+                  return (
+                    <line
+                      key={line.id}
+                      x1={from.x}
+                      y1={from.y}
+                      x2={to.x}
+                      y2={to.y}
+                      stroke={isNet ? "#f1fff7" : "#d8fbe7"}
+                      strokeWidth={isNet ? 2.5 : 2}
+                      strokeDasharray={line.id.includes("doubles-long-service") ? "5 5" : undefined}
+                    />
+                  );
+                })}
               </g>
               <g>
-                <line x1="320" y1="11" x2="320" y2="289" stroke="#e9fff2" strokeWidth="5" opacity=".22" />
-                <line x1="320" y1="11" x2="320" y2="289" stroke="#f1fff7" strokeWidth="2.5" />
-                <rect x="315" y="9" width="10" height="6" rx="2" fill="#d5f8e3" />
-                <rect x="315" y="285" width="10" height="6" rx="2" fill="#d5f8e3" />
-                <path d="M314 24h12M314 32h12M314 40h12M314 48h12M314 56h12M314 64h12M314 72h12M314 80h12M314 88h12M314 96h12M314 104h12M314 112h12M314 120h12M314 128h12M314 136h12M314 144h12M314 152h12M314 160h12M314 168h12M314 176h12M314 184h12M314 192h12M314 200h12M314 208h12M314 216h12M314 224h12M314 232h12M314 240h12M314 248h12M314 256h12M314 264h12M314 272h12" stroke="#d8fbe7" strokeOpacity=".28" strokeWidth="1" />
+                {(() => {
+                  const netTop = renderMetricPoint({ x: COURT_DIMENSIONS.lengthMeters / 2, y: 0 });
+                  const netBottom = renderMetricPoint({ x: COURT_DIMENSIONS.lengthMeters / 2, y: COURT_DIMENSIONS.doublesWidthMeters });
+                  return (
+                    <>
+                      <line x1={netTop.x} y1={netTop.y - 2} x2={netBottom.x} y2={netBottom.y + 2} stroke="#e9fff2" strokeWidth="5" opacity=".22" />
+                      <rect x={netTop.x - 5} y={netTop.y - 4} width="10" height="6" rx="2" fill="#d5f8e3" />
+                      <rect x={netBottom.x - 5} y={netBottom.y - 2} width="10" height="6" rx="2" fill="#d5f8e3" />
+                    </>
+                  );
+                })()}
               </g>
+              {showMeasurements ? (
+                <g fill="#effff6" fontSize="11" fontWeight="700" paintOrder="stroke" stroke="#06130e" strokeWidth="3">
+                  <text x="320" y="294" textAnchor="middle">
+                    {`${COURT_DIMENSIONS.lengthMeters.toFixed(2)} m length · ${matchFormat === "singles" ? COURT_DIMENSIONS.singlesWidthMeters.toFixed(2) : COURT_DIMENSIONS.doublesWidthMeters.toFixed(2)} m ${matchFormat} width`}
+                  </text>
+                  <text x="320" y="8" textAnchor="middle">
+                    {`Short service ${COURT_DIMENSIONS.shortServiceFromNetMeters.toFixed(2)} m from net · Net ${COURT_DIMENSIONS.netHeightMeters.toFixed(3)} m high`}
+                  </text>
+                  {matchFormat === "doubles" ? (
+                    <text x="320" y="298" textAnchor="middle">
+                      {`Long service ${COURT_DIMENSIONS.doublesLongServiceInsideBoundaryMeters.toFixed(2)} m inside each back boundary`}
+                    </text>
+                  ) : null}
+                </g>
+              ) : null}
               {firstPlayers.map((player, index) => (
                 <g key={`side-a-${index}`}>
                   <circle cx={player.x} cy={player.y} r="18" fill="#4dd8a0" opacity=".18" />

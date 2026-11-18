@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { useCameraStream } from "@/lib/camera/useCameraStream";
+import { detectCourtFromVideo } from "@/lib/calibration/detect-court";
 import {
   isValidQuadrilateral,
   isValidOrderedCourt,
@@ -24,11 +25,15 @@ import {
   mapVideoPointToStage,
   projectPoint,
   solveHomography,
-  UNIT_COURT_CORNERS,
   type Homography,
   type Point2D,
   type VideoDisplayRect,
 } from "@/lib/calibration/homography";
+import {
+  COURT_DIMENSIONS,
+  getCourtCorners,
+  getCourtLines,
+} from "@/lib/court-config";
 import { AI_PROVIDER_STATUS } from "@/lib/ai/tracking";
 import type { CameraStatus } from "@/lib/camera/camera-errors";
 
@@ -58,50 +63,6 @@ const CALIBRATION_LABELS = [
   "Near-left corner",
 ];
 
-const SINGLES_SIDE_OFFSET = (6.1 - 5.18) / (2 * 6.1);
-const SHORT_SERVICE_OFFSET = 1.98 / 13.4;
-const DOUBLES_LONG_SERVICE_OFFSET = 0.76 / 13.4;
-
-const COURT_LINES: {
-  id: string;
-  from: Point2D;
-  to: Point2D;
-  format?: "singles" | "doubles";
-}[] = [
-  { id: "baseline-far", from: { x: 0, y: 0 }, to: { x: 0, y: 1 } },
-  { id: "baseline-near", from: { x: 1, y: 0 }, to: { x: 1, y: 1 } },
-  { id: "sideline-far", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, format: "doubles" },
-  { id: "sideline-near", from: { x: 0, y: 1 }, to: { x: 1, y: 1 }, format: "doubles" },
-  {
-    id: "singles-sideline-far",
-    from: { x: 0, y: SINGLES_SIDE_OFFSET },
-    to: { x: 1, y: SINGLES_SIDE_OFFSET },
-    format: "singles",
-  },
-  {
-    id: "singles-sideline-near",
-    from: { x: 0, y: 1 - SINGLES_SIDE_OFFSET },
-    to: { x: 1, y: 1 - SINGLES_SIDE_OFFSET },
-    format: "singles",
-  },
-  { id: "short-service-left", from: { x: 0.5 - SHORT_SERVICE_OFFSET, y: 0 }, to: { x: 0.5 - SHORT_SERVICE_OFFSET, y: 1 } },
-  { id: "short-service-right", from: { x: 0.5 + SHORT_SERVICE_OFFSET, y: 0 }, to: { x: 0.5 + SHORT_SERVICE_OFFSET, y: 1 } },
-  {
-    id: "doubles-long-service-left",
-    from: { x: DOUBLES_LONG_SERVICE_OFFSET, y: 0 },
-    to: { x: DOUBLES_LONG_SERVICE_OFFSET, y: 1 },
-    format: "doubles",
-  },
-  {
-    id: "doubles-long-service-right",
-    from: { x: 1 - DOUBLES_LONG_SERVICE_OFFSET, y: 0 },
-    to: { x: 1 - DOUBLES_LONG_SERVICE_OFFSET, y: 1 },
-    format: "doubles",
-  },
-  { id: "center-left", from: { x: 0, y: 0.5 }, to: { x: 0.5 - SHORT_SERVICE_OFFSET, y: 0.5 } },
-  { id: "center-right", from: { x: 0.5 + SHORT_SERVICE_OFFSET, y: 0.5 }, to: { x: 1, y: 0.5 } },
-  { id: "net", from: { x: 0.5, y: 0 }, to: { x: 0.5, y: 1 } },
-];
 
 const STATUS_LABELS: Record<CameraStatus, string> = {
   idle: "Camera off",
@@ -190,19 +151,18 @@ function ProjectedCourt({
     if (!projected) return null;
     return mapVideoPointToStage(projected, displayRect);
   };
-  const corners = UNIT_COURT_CORNERS.map(screenPoint);
+  const corners = getCourtCorners().map(screenPoint);
   if (corners.some((point) => point === null)) return null;
   const polygon = corners.map((point) => `${point!.x},${point!.y}`).join(" ");
 
   return (
     <g opacity={opacity / 100} pointerEvents="none">
       <polygon points={polygon} fill="#10b981" fillOpacity=".08" stroke="#d8fbe7" strokeOpacity=".62" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-      {COURT_LINES.map(({ id, from, to, format }) => {
+      {getCourtLines(singles ? "singles" : "doubles").map(({ id, from, to }) => {
         const start = screenPoint(from);
         const end = screenPoint(to);
         if (!start || !end) return null;
         const isNet = id === "net";
-        const isInactiveFormat = format && ((format === "singles") !== singles);
         return (
           <line
             key={id}
@@ -212,7 +172,7 @@ function ProjectedCourt({
             y2={end.y}
             stroke={isNet ? "#f8fff9" : "#c8ffe0"}
             strokeWidth={isNet ? 4 : 2}
-            strokeOpacity={isInactiveFormat ? ".3" : isNet ? ".95" : ".84"}
+            strokeOpacity={isNet ? ".95" : ".84"}
             strokeDasharray={id.includes("doubles-long-service") && !singles ? "7 5" : undefined}
             vectorEffect="non-scaling-stroke"
           />
@@ -241,6 +201,10 @@ export function LiveAICourtView() {
   const [calibrationNotice, setCalibrationNotice] = useState<string | null>(null);
   const [hasVisibleMarkings, setHasVisibleMarkings] = useState(false);
   const [adjustment, setAdjustment] = useState(EMPTY_ADJUSTMENT);
+  const [detectionStatus, setDetectionStatus] = useState<"idle" | "detecting" | "detected" | "failed">("idle");
+  const [detectionConfidence, setDetectionConfidence] = useState<number | null>(null);
+  const [calibrationSource, setCalibrationSource] = useState<"manual" | "automatic" | null>(null);
+  const [calibrationMode, setCalibrationMode] = useState<"auto" | "manual">("auto");
 
   calibrationPointsRef.current = calibrationPoints;
 
@@ -265,6 +229,9 @@ export function LiveAICourtView() {
         setIsEditingPoints(false);
         setHasVisibleMarkings(false);
         setAdjustment(EMPTY_ADJUSTMENT);
+        setDetectionStatus("idle");
+        setDetectionConfidence(null);
+        setCalibrationSource(null);
         setCalibrationNotice("The video display size or orientation changed. Please calibrate again.");
       }
     });
@@ -283,6 +250,9 @@ export function LiveAICourtView() {
     setCalibrationNotice(null);
     setHasVisibleMarkings(false);
     setAdjustment(EMPTY_ADJUSTMENT);
+    setDetectionStatus("idle");
+    setDetectionConfidence(null);
+    setCalibrationSource(null);
   }, [camera.selectedDeviceId]);
 
   useEffect(() => {
@@ -292,6 +262,9 @@ export function LiveAICourtView() {
       setIsEditingPoints(false);
       setHasVisibleMarkings(false);
       setAdjustment(EMPTY_ADJUSTMENT);
+      setDetectionStatus("idle");
+      setDetectionConfidence(null);
+      setCalibrationSource(null);
       setCalibrationNotice("The camera stream stopped or changed. Please calibrate again after it is live.");
     }
   }, [camera.status]);
@@ -326,7 +299,7 @@ export function LiveAICourtView() {
       adjustedPoints.length === 4 &&
       isValidOrderedCourt(adjustedScreenPoints) &&
       isValidQuadrilateral(adjustedPoints)
-        ? solveHomography(UNIT_COURT_CORNERS, adjustedPoints)
+        ? solveHomography(getCourtCorners(), adjustedPoints)
         : null,
     [adjustedPoints, adjustedScreenPoints],
   );
@@ -345,12 +318,62 @@ export function LiveAICourtView() {
 
   function beginCalibration() {
     if (camera.status !== "live") return;
+    setCalibrationMode("manual");
     setCalibrationPoints([]);
     setCalibrationError(null);
     setCalibrationNotice(null);
     setHasVisibleMarkings(false);
     setIsEditingPoints(false);
+    setDetectionStatus("idle");
+    setDetectionConfidence(null);
+    setCalibrationSource("manual");
     setIsCalibrating(true);
+  }
+
+  async function beginAutomaticCalibration() {
+    if (camera.status !== "live" || !camera.videoRef.current) return;
+    setCalibrationMode("auto");
+    setDetectionStatus("detecting");
+    setDetectionConfidence(null);
+    setCalibrationError(null);
+    setCalibrationNotice(null);
+    setIsCalibrating(false);
+    setIsEditingPoints(false);
+
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    if (!camera.videoRef.current) return;
+
+    const result = await detectCourtFromVideo(camera.videoRef.current);
+    if (!result.detected) {
+      setCalibrationPoints([]);
+      setHasVisibleMarkings(false);
+      setCalibrationSource(null);
+      setDetectionStatus("failed");
+      setDetectionConfidence(null);
+      setCalibrationNotice(`${result.reason} Adjust the camera or use manual calibration.`);
+      return;
+    }
+
+    const screenPoints = result.corners.map((point) => {
+      const displayed = mapVideoPointToStage(point, displayRect);
+      return { x: displayed.x / viewSize.width, y: displayed.y / viewSize.height };
+    });
+    if (!isValidOrderedCourt(screenPoints) || !isValidQuadrilateral(screenPoints)) {
+      setCalibrationPoints([]);
+      setHasVisibleMarkings(false);
+      setCalibrationSource(null);
+      setDetectionStatus("failed");
+      setDetectionConfidence(null);
+      setCalibrationNotice("The detected corners were invalid. Adjust the camera or use manual calibration.");
+      return;
+    }
+
+    setCalibrationPoints([...result.corners]);
+    setCalibrationSource("automatic");
+    setHasVisibleMarkings(true);
+    setDetectionStatus("detected");
+    setDetectionConfidence(result.confidence);
+    setCalibrationNotice("Court boundaries detected from the live camera frame.");
   }
 
   function pointFromPointer(event: React.PointerEvent<SVGSVGElement>) {
@@ -389,7 +412,7 @@ export function LiveAICourtView() {
 
     if (
       nextPoints.length === 4 &&
-      (!isValidOrderedCourt(nextScreenPoints) || !solveHomography(UNIT_COURT_CORNERS, nextPoints))
+      (!isValidOrderedCourt(nextScreenPoints) || !solveHomography(getCourtCorners(), nextPoints))
     ) {
       setCalibrationError("These points are crossed, reversed, or too close together. Adjust the points or undo the last one.");
       return;
@@ -400,6 +423,9 @@ export function LiveAICourtView() {
     if (nextPoints.length === 4) {
       setIsCalibrating(false);
       setIsEditingPoints(false);
+      setCalibrationSource("manual");
+      setDetectionStatus("idle");
+      setDetectionConfidence(null);
     }
   }
 
@@ -430,7 +456,7 @@ export function LiveAICourtView() {
     if (
       cancelled ||
       (nextPoints.length === 4 &&
-        (!isValidOrderedCourt(nextScreenPoints) || !solveHomography(UNIT_COURT_CORNERS, nextPoints)))
+        (!isValidOrderedCourt(nextScreenPoints) || !solveHomography(getCourtCorners(), nextPoints)))
     ) {
       setCalibrationPoints(drag.originalPoints);
       setCalibrationError("That adjustment would make the court points invalid. The previous points were restored.");
@@ -448,6 +474,10 @@ export function LiveAICourtView() {
     setCalibrationNotice(null);
     setHasVisibleMarkings(false);
     setAdjustment(EMPTY_ADJUSTMENT);
+    setDetectionStatus("idle");
+    setDetectionConfidence(null);
+    setCalibrationSource(null);
+    setCalibrationMode("auto");
   }
 
   function undoCalibrationPoint() {
@@ -475,6 +505,9 @@ export function LiveAICourtView() {
       setIsEditingPoints(false);
       setHasVisibleMarkings(false);
       setAdjustment(EMPTY_ADJUSTMENT);
+      setDetectionStatus("idle");
+      setDetectionConfidence(null);
+      setCalibrationSource(null);
       setCalibrationNotice("The camera video dimensions changed. Please calibrate again.");
     }
   }
@@ -679,10 +712,35 @@ export function LiveAICourtView() {
                 aria-pressed={matchFormat === format}
                 onClick={() => setMatchFormat(format)}
               >
-                {format === "singles" ? "Singles · 13.4 × 5.18 m" : "Doubles · 13.4 × 6.10 m"}
+                {format === "singles"
+                  ? `Singles · ${COURT_DIMENSIONS.lengthMeters.toFixed(2)} × ${COURT_DIMENSIONS.singlesWidthMeters.toFixed(2)} m`
+                  : `Doubles · ${COURT_DIMENSIONS.lengthMeters.toFixed(2)} × ${COURT_DIMENSIONS.doublesWidthMeters.toFixed(2)} m`}
               </button>
             ))}
           </div>
+
+          <div className="live-ai-format-switch live-ai-calibration-mode" role="group" aria-label="Calibration mode">
+            {(["auto", "manual"] as const).map((mode) => (
+              <button
+                type="button"
+                key={mode}
+                className={`virtual-segment${calibrationMode === mode ? " is-active" : ""}`}
+                aria-pressed={calibrationMode === mode}
+                onClick={() => {
+                  setCalibrationMode(mode);
+                  if (mode === "manual") beginCalibration();
+                }}
+              >
+                {mode === "auto" ? "Auto Detect" : "Manual Align"}
+              </button>
+            ))}
+          </div>
+
+          <p className="live-ai-hint">
+            Official geometry: short service {COURT_DIMENSIONS.shortServiceFromNetMeters.toFixed(2)} m from the net;
+            {" "}doubles long service {COURT_DIMENSIONS.doublesLongServiceInsideBoundaryMeters.toFixed(2)} m inside each baseline;
+            {" "}net {COURT_DIMENSIONS.netHeightMeters.toFixed(3)} m at centre.
+          </p>
 
           <div className="live-ai-calibration-status">
             <div className={`live-ai-quality quality-${geometryQuality.toLowerCase().replace(" ", "-")}`}>
@@ -690,9 +748,17 @@ export function LiveAICourtView() {
               <span><strong>{geometryQuality}</strong><small>Calibration geometry</small></span>
             </div>
             <p>
-              {isCalibrated
-                ? "Manual visual calibration only. This is not automatic court detection and does not verify physical accuracy."
-                : "Mark four visible court reference corners. This manual visual calibration is not automatic court detection."}
+              {detectionStatus === "detecting"
+                ? "Detecting court…"
+                : detectionStatus === "detected"
+                  ? `Court detected · Detection confidence ${detectionConfidence ?? 0}%${calibrationSource === "automatic" ? " · Detected corners can be adjusted manually." : ""}`
+                  : detectionStatus === "failed"
+                    ? "Detection failed — adjust camera or use manual calibration."
+                    : isCalibrated
+                      ? calibrationSource === "manual"
+                          ? "Manual metric alignment. Perspective corners have been aligned manually; this is not automatic detection."
+                        : "Four court corners set."
+                      : "Mark four visible court reference corners, or try automatic detection."}
             </p>
           </div>
 
@@ -711,6 +777,15 @@ export function LiveAICourtView() {
           {calibrationNotice ? <p className="live-ai-calibration-notice" role="status">{calibrationNotice}</p> : null}
 
           <div className="live-ai-calibration-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void beginAutomaticCalibration()}
+              disabled={!isLive || detectionStatus === "detecting"}
+            >
+              <Crosshair size={16} />
+              {detectionStatus === "detecting" ? "Detecting court…" : "Auto Calibrate"}
+            </button>
             <button type="button" className="btn btn-primary" onClick={beginCalibration} disabled={!isLive}>
               <Crosshair size={16} /> {isCalibrated ? "Recalibrate" : "Mark 4 court points"}
             </button>

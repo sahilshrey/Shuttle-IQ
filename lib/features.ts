@@ -36,7 +36,7 @@ export const PLATFORM_FEATURES: PlatformFeature[] = [
     id: "court-detection",
     title: "Automatic court detection",
     description: "Recognises court lines and boundaries from the camera feed.",
-    status: "planned",
+    status: "live",
   },
   {
     id: "umpire-calls",
